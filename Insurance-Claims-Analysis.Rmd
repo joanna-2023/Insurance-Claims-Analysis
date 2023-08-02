@@ -1,0 +1,314 @@
+---
+title: "Insurance Claims Analysis"
+output: html_document
+author: "Desi Nikolova"
+date: "2023-02-24"
+---
+
+Kaggle's API installation:
+```{r}
+##### Libraries:
+#install.packages(c("devtools"))
+#devtools::install_github("ldurazo/kaggler")
+```
+
+All required libraries:
+```{r}
+##### Libraries:
+suppressPackageStartupMessages(library(readr))
+suppressPackageStartupMessages(library(kaggler))
+suppressPackageStartupMessages(library(httr))
+suppressPackageStartupMessages(library(MASS))
+suppressPackageStartupMessages(library(corrplot))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(lubridate))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(caTools))
+suppressPackageStartupMessages(library(car))
+suppressPackageStartupMessages(library(olsrr))
+suppressPackageStartupMessages(library(quantmod))
+```
+
+
+**Analysis with Random Forest Classifier and Logistic Binomial Model**
+
+Re-load the Insurance Claims dataset using Kaggle's API & the User Credentials or use
+a local copy:
+```{r}
+######## Repo ID and a file containing the user credentials :
+#dataset_dir <-'shivamb/vehicle-claim-fraud-detection'
+#kgl_auth(creds_file = 'kaggle.json')
+#response <- kgl_datasets_download_all(owner_dataset = dataset_dir)
+#download.file(response[["url"]], "data/temp.zip", mode="wb")
+#unzip_result <- unzip("data/temp.zip", 
+                      #exdir = "data", 
+                     # overwrite = TRUE)
+#unzip_result
+claims_data <- read_csv("data/fraud_oracle.csv",
+                        show_col_types = FALSE)
+
+######## Drop IDs variables:
+drop <- c("PolicyNumber","RepNumber")
+claims_data <- claims_data[,!(names(claims_data) %in% drop)]
+claims_data$FraudFound_P <- as.factor(claims_data$FraudFound_P)
+```
+                         GVIF Df GVIF^(1/(2*Df))
+Month                1.098013 11        1.004259
+WeekOfMonth          1.092374  1        1.045167
+DayOfWeek            1.045465  6        1.003712
+Make                 1.731539 18        1.015367
+AccidentArea         1.015376  1        1.007659
+WeekOfMonthClaimed   1.094528  1        1.046197
+Sex                  1.046101  1        1.022791
+Fault                1.035787  1        1.017736
+VehiclePrice         1.810111  5        1.061135
+Deductible           1.084810  1        1.041542
+DriverRating         1.005849  1        1.002920
+Days_Policy_Accident 1.989826  4        1.089813
+Days_Policy_Claim    1.938613  3        1.116645
+PastNumberOfClaims   1.083920  3        1.013521
+AgeOfPolicyHolder    1.439368  8        1.023024
+PoliceReportFiled    1.051298  1        1.025328
+WitnessPresent       1.052252  1        1.025794
+AgentType            1.016617  1        1.008274
+NumberOfSuppliments  1.075200  3        1.012158
+AddressChange_Claim  8.780106  4        1.312011
+NumberOfCars         8.412546  4        1.305016
+Year                 1.010567  1        1.005270
+
+
+Exploring the data - Make and Fraudulent Claims:
+```{r}
+######## Exploration analysis:
+
+#All cars-
+plot(as.factor(claims_data$Make),las=2)
+
+#Only fraudulent claims-
+fraud <- claims_data[claims_data$FraudFound_P == 1,]
+plot(as.factor(fraud$Make),las=2,col='blue')
+
+#Ordered option - 
+which.vehicles<-unique(fraud$Make)
+which.vehicles
+frequency<-c()
+for(k in 1:length(which.vehicles)){
+   c.v <- fraud[fraud$Make == which.vehicles[k],]
+   #print(c.v)
+   frequency[k]<-dim(c.v)[1]
+   print(c(which.vehicles[k],dim(c.v)[1]))
+}
+make = which.vehicles
+counts =c(179,186,94,59123,213,33,8,2,11,1,6,6,1,1)
+data.v.fraud<-data.frame(make=which.vehicles,
+                         count=frequency)
+
+counts <- table(data.v.fraud$count)
+barplot(data.v.fraud$count, 
+        names.arg=data.v.fraud$make,
+        cex.names=0.8,
+        las=2,
+        col='blue')
+```
+
+Splitting the data to 25% validation and 75% training sets:
+```{r}
+######## Split to test and train data sets:
+sample = sample.split(claims_data$FraudFound_P, SplitRatio = .75)
+train = subset(claims_data, sample == TRUE)
+test  = subset(claims_data, sample == FALSE)
+dim(train)
+dim(test)
+```
+
+Random forest classification to estimate Make in terms of features importance location in the data:
+```{r}
+######  Create random forest for classification model
+library(randomForest)
+require(caTools)
+set.seed(4543)
+rf.unoptimized <- randomForest(
+  FraudFound_P ~ .,
+  data=train,
+  ntree=300,
+  importance = TRUE,
+  proximity = TRUE
+)
+```
+
+Features' importance:
+```{r}
+rf.unoptimized 
+importance(rf.unoptimized )
+importance(rf.unoptimized , type=1)
+#varImpPlot(rf.unoptimized )
+```
+
+Plot the calculated features:
+```{r}
+# Get importance values as a data frame
+imp = as.data.frame(importance(rf.unoptimized ))
+imp = cbind(vars=rownames(imp), imp)
+imp = imp[order(imp$MeanDecreaseGini),]
+imp$vars = factor(imp$vars, levels=unique(imp$vars))
+
+barplot(imp$MeanDecreaseGini, 
+        names.arg=imp$vars,
+        las=2,
+        cex.names=0.6,
+        col='blue')
+
+library(tidyr)
+library(ggplot2)
+imp %>% 
+  pivot_longer(cols=matches("Mean")) %>% 
+  ggplot(aes(value, vars)) +
+  geom_col(aes(fill = value)) +
+  geom_text(aes(label=round(value), x=0.5*value), size=3, colour="white") +
+  facet_grid(. ~ name, scales="free_x") +
+  scale_x_continuous(expand=expansion(c(0,0.04))) +
+  theme_classic()
+
+values<-imp[['1']]
+names<-imp[['vars']]
+df <- data.frame(names=names,
+                 values=values)
+newdata <- df[order(-values),]
+print(head(newdata,20))
+
+```
+
+Optimal value (with respect to Out-of-Bag error estimate):
+```{r}
+#Select mtry value with minimum out of bag(OOB) error.
+set.seed(4543)
+library(MASS)
+library(randomForest)
+drop <- c("FraudFound_P")
+y <- train$FraudFound_P
+x <- train[,!(names(train) %in% drop)]
+fgl.res <- tuneRF(x, 
+                  y, 
+                  stepFactor=1.5)
+```
+
+RF with the best Mtry=4:
+```{r}
+###### Recreating the RF with Mtry = 5:
+set.seed(4543)
+rf <- randomForest(
+  FraudFound_P ~ .,
+  data=train,
+  ntree=300,
+  mtry=5,#4
+  importance = TRUE,
+  proximity = TRUE
+)
+
+```
+
+
+Estimating model performance using the validation set-
+- Accuracy - 99%
+- OOB estimate of  error rate: 5.96%
+- RMSE on test data - 6%
+
+```{r}
+###### Estimating RMSE:
+rf
+pred_fclaims <- predict(rf, test)
+print(c('RMSE',mean((as.numeric(pred_fclaims) - as.numeric(test$FraudFound_P))^2)))
+
+```
+
+Features importance with the best Mtry:
+```{r}
+# Get importance values as a data frame
+#imp.sorted.on.fraud <- sort(imp['1'], decreasing = TRUE)
+imp = as.data.frame(importance(rf))
+imp = cbind(vars=rownames(imp), imp)
+imp = imp[order(imp$MeanDecreaseGini),]
+imp$vars = factor(imp$vars, levels=unique(imp$vars))
+
+barplot(imp$MeanDecreaseGini, 
+        names.arg=imp$vars,
+        las=2,
+        cex.names=0.6,
+        col = 'blue')
+values<-imp[['1']]
+names<-imp[['vars']]
+df <- data.frame(names=names,
+                 values=values)
+newdata <- df[order(-values),]
+print(head(newdata,20))
+```
+
+The higher the value of mean decrease accuracy or mean decrease Gini score, the higher the importance of the variable in the model.
+```{r}
+library(tidyr)
+library(ggplot2)
+imp %>% 
+  pivot_longer(cols=matches("Mean")) %>% 
+  ggplot(aes(value, vars)) +
+  geom_col(aes(fill = value)) +
+  geom_text(aes(label=round(value), x=0.5*value), size=3, colour="white") +
+  facet_grid(. ~ name, scales="free_x") +
+  scale_x_continuous(expand=expansion(c(0,0.04))) +
+  theme_classic()
+
+values<-imp[['1']]
+names<-imp[['vars']]
+df <- data.frame(names=names,
+                 values=values)
+newdata <- df[order(-values),]
+print(head(newdata,30))
+```
+
+What is Fault? - Third party or Owner.
+```{r}
+unique(claims_data$Fault)
+head(claims_data)
+```
+
+Logistic regression - consider the Null and a Model only with **mechanical factors**:
+```{r}
+claims_data$FraudFound_P <- as.factor(claims_data$FraudFound_P)
+set.seed(1) # Set the seed here so that we get the same numbers 
+null.model <- glm(FraudFound_P ~ 1, 
+                  data = claims_data, 
+                  family = binomial(link = "logit")) 
+full.model <- glm(FraudFound_P ~ Make + VehicleCategory +  VehiclePrice + AgeOfVehicle, 
+                  data = claims_data, 
+                  family = binomial(link = "logit")) 
+
+step.both.fit <- step(null.model, scope = list(lower = null.model, upper = full.model), direction = "both")
+step.backward <- step(full.model, direction = "backward")
+```
+
+Performance of Step-both vs. Step-Backward:
+```{r}
+summary(step.both.fit) 
+summary(step.backward)
+```
+
+Print out variables p-values:
+```{r}
+library(stargazer) 
+stargazer(step.both.fit, type = "text")
+#stargazer(step.both.fit, type = "html", out = "step.fit.both.htm")
+```
+
+Estimate the strength of validity of the model:
+```{r}
+anova(step.both.fit,test="Chisq")
+plot(step.both.fit$fitted)
+```
+
+Risk ratios:
+```{r}
+final.fit.relative.risk <- exp(coef(step.both.fit)) 
+stargazer(final.fit.relative.risk,
+          type = "text", 
+          coef = list(final.fit.relative.risk), 
+          p.auto = FALSE)
+```
